@@ -1,41 +1,29 @@
-import sys
 import os
-import random
-from typing import List
+import sys
 
-# Ensure backend directory is in sys.path for robust module imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Response, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_groq import ChatGroq
+from sqlalchemy.orm import Session
 
-from config import GROQ_API_KEY, DEFAULT_MODEL, ALLOWED_ORIGINS
-from database import engine, Base, get_db
-from models import ComplaintRecord
-from schemas import (
-    ComplaintIntakeRequest, 
-    ChatQueryRequest, 
-    SaveComplaintRequest,
-    ComplaintRecordResponse
-)
-from utils.text_extractor import extract_text_from_file
 from agents.graph import complaint_graph
 from agents.prompts import COPILOT_CHAT_SYSTEM_PROMPT
+from config import DEFAULT_MODEL, GROQ_API_KEY
+from database import Base, engine, get_db
+from models import ComplaintRecord
+from schemas import ChatQueryRequest, ComplaintIntakeRequest
 
-
-# Create database tables automatically on startup
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="PharmaPulse AI Backend",
-    description="FastAPI + LangGraph + Groq LLM + SQLAlchemy Backend for QMS Complaint Management",
-    version="2.4.0"
+    description="QMS Complaint Intake & Triage Engine",
+    version="2.4.0",
 )
 
-# Robust CORS Configuration: explicitly permit localhost and 127.0.0.1 on any port
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
@@ -45,7 +33,7 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-# Global Preflight Catch-All Route (Placed properly at module level)
+
 @app.options("/{full_path:path}")
 async def options_preflight(full_path: str):
     return Response(
@@ -54,29 +42,29 @@ async def options_preflight(full_path: str):
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
             "Access-Control-Allow-Headers": "*",
-        }
+        },
     )
 
+
 def check_db_duplicates(batch_number: str, db: Session) -> dict:
-    """Helper to query database for recurring complaints on the same batch."""
     if not batch_number or batch_number.strip() in ["", "Awaiting AI extraction..."]:
         return {"is_duplicate": False, "count": 0, "prior_records": []}
-    
+
     try:
         existing = db.query(ComplaintRecord).filter(
             ComplaintRecord.batch_lot_number == batch_number.strip()
         ).all()
-        
+
         if existing:
             return {
                 "is_duplicate": True,
                 "count": len(existing),
                 "prior_records": [r.complaint_id for r in existing],
-                "alert": f"Batch {batch_number} has {len(existing)} prior complaint(s) logged (e.g. {existing[0].complaint_id}). Immediate QA deviation review recommended."
+                "alert": f"Batch {batch_number} has {len(existing)} prior complaint(s) logged (e.g. {existing[0].complaint_id}). Immediate QA deviation review recommended.",
             }
-    except Exception as e:
-        print(f"[Warning] Duplicate DB check error: {e}")
-        
+    except Exception:
+        pass
+
     return {"is_duplicate": False, "count": 0, "prior_records": []}
 
 
@@ -87,20 +75,21 @@ def read_root():
         "service": "PharmaPulse AI QMS Engine",
         "version": "2.4.0",
         "database": "SQLAlchemy Active",
-        "groq_configured": bool(GROQ_API_KEY and not GROQ_API_KEY.startswith("your_groq"))
+        "groq_configured": bool(GROQ_API_KEY and not GROQ_API_KEY.startswith("your_groq")),
     }
+
 
 @app.get("/health")
 def health_check():
     return {
         "status": "healthy",
         "database": "connected",
-        "groq_key_present": bool(GROQ_API_KEY and len(GROQ_API_KEY) > 10)
+        "groq_key_present": bool(GROQ_API_KEY and len(GROQ_API_KEY) > 10),
     }
+
 
 @app.post("/api/extract-text")
 async def extract_text_endpoint(payload: ComplaintIntakeRequest, db: Session = Depends(get_db)):
-    """Accept raw text/email payload, execute LangGraph workflow, and run DB duplicate audit."""
     raw_text = payload.text
     if not raw_text or not raw_text.strip():
         raise HTTPException(status_code=400, detail="Text field cannot be empty.")
@@ -108,7 +97,6 @@ async def extract_text_endpoint(payload: ComplaintIntakeRequest, db: Session = D
     try:
         result_state = await complaint_graph.ainvoke({"raw_text": raw_text})
         extracted_data = result_state.get("extracted_data", {})
-        
         batch_no = extracted_data.get("batchLotNumber")
         duplicate_info = check_db_duplicates(batch_no, db)
 
@@ -118,19 +106,19 @@ async def extract_text_endpoint(payload: ComplaintIntakeRequest, db: Session = D
             "validationErrors": result_state.get("validation_errors", []),
             "completenessInfo": result_state.get("completeness_info", {}),
             "duplicateInfo": duplicate_info,
-            "status": "success"
+            "status": "success",
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LangGraph execution error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"LangGraph execution error: {e}")
+
 
 @app.post("/api/upload")
 async def upload_document_endpoint(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Accept file upload (PDF, DOCX, TXT, EML), extract text, run LangGraph, and check duplicates."""
     try:
+        from utils.text_extractor import extract_text_from_file
         raw_text = await extract_text_from_file(file)
         result_state = await complaint_graph.ainvoke({"raw_text": raw_text})
         extracted_data = result_state.get("extracted_data", {})
-
         batch_no = extracted_data.get("batchLotNumber")
         duplicate_info = check_db_duplicates(batch_no, db)
 
@@ -142,16 +130,16 @@ async def upload_document_endpoint(file: UploadFile = File(...), db: Session = D
             "validationErrors": result_state.get("validation_errors", []),
             "completenessInfo": result_state.get("completeness_info", {}),
             "duplicateInfo": duplicate_info,
-            "status": "success"
+            "status": "success",
         }
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Document intake error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Document intake error: {e}")
+
 
 @app.post("/api/copilot-chat")
 async def copilot_chat_endpoint(payload: ChatQueryRequest):
-    """Context-aware interactive Q&A copilot using Groq LLM."""
     user_query = payload.query
     context = payload.context or {}
 
@@ -163,30 +151,26 @@ async def copilot_chat_endpoint(payload: ChatQueryRequest):
         llm = ChatGroq(
             groq_api_key=GROQ_API_KEY,
             model_name=DEFAULT_MODEL,
-            temperature=0.2
+            temperature=0.2,
         )
-
         prompt = ChatPromptTemplate.from_messages([
             ("system", COPILOT_CHAT_SYSTEM_PROMPT),
-            ("user", "Complaint Context: {context}\n\nQuestion: {query}")
+            ("user", "Complaint Context: {context}\n\nQuestion: {query}"),
         ])
-
         chain = prompt | llm
         response = await chain.ainvoke({"context": str(context), "query": user_query})
-        
+
         return {
             "response": response.content if hasattr(response, "content") else str(response),
-            "model": DEFAULT_MODEL
+            "model": DEFAULT_MODEL,
         }
     except Exception as e:
         reply = generate_fallback_chat_reply(user_query, context)
         return {"response": reply, "error": str(e), "model": "fallback-engine"}
 
-# --- PERSISTENCE ENDPOINTS ---
 
 @app.post("/api/complaints")
 async def save_complaint_endpoint(request: Request, db: Session = Depends(get_db)):
-    """Save verified complaint record and AI risk assessment to database."""
     try:
         data = await request.json()
     except Exception:
@@ -195,7 +179,6 @@ async def save_complaint_endpoint(request: Request, db: Session = Depends(get_db
     formData = data.get("formData") or {}
     risk = data.get("riskAssessment") or {}
 
-    # Handle if formData is passed as a nested object or string
     if not isinstance(formData, dict):
         formData = {}
     if not isinstance(risk, dict):
@@ -228,8 +211,6 @@ async def save_complaint_endpoint(request: Request, db: Session = Depends(get_db
             immediate_action=risk.get("immediateAction"),
             capa_recommendation=risk.get("capaRecommendation"),
         )
-
-
         db.add(record)
         db.commit()
         db.refresh(record)
@@ -237,21 +218,21 @@ async def save_complaint_endpoint(request: Request, db: Session = Depends(get_db
         return {
             "success": True,
             "complaint_id": complaint_tracking_id,
-            "message": f"Complaint successfully logged as {complaint_tracking_id}."
+            "message": f"Complaint successfully logged as {complaint_tracking_id}.",
         }
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database save failure: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database save failure: {e}")
+
 
 @app.get("/api/complaints")
 def list_complaints_endpoint(db: Session = Depends(get_db)):
-    """List all past logged complaint records for audit history."""
     records = db.query(ComplaintRecord).order_by(ComplaintRecord.created_at.desc()).all()
     return [r.to_dict() for r in records]
 
+
 @app.get("/api/complaints/{record_id}")
 def get_complaint_detail_endpoint(record_id: str, db: Session = Depends(get_db)):
-    """Fetch complete complaint record details by integer ID or CMP tracking code."""
     if record_id.isdigit():
         record = db.query(ComplaintRecord).filter(ComplaintRecord.id == int(record_id)).first()
     else:
@@ -277,6 +258,7 @@ def generate_fallback_chat_reply(query: str, context: dict) -> str:
         return f"**Batch Audit History:** Lot **{batch}** has 0 prior customer complaints on record. All initial certificate of analysis (CoA) release values met USP specification limits."
     else:
         return f"Regarding '{query}': Current QMS file for lot {batch} ({product}) complies with 21 CFR Part 211.198 complaint documentation standards."
+
 
 if __name__ == "__main__":
     import uvicorn

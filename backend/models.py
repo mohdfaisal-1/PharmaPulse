@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Text, DateTime
+from sqlalchemy import Column, DateTime, Integer, String, Text
 from database import Base
+
 
 class ComplaintRecord(Base):
     __tablename__ = "complaint_records"
@@ -54,7 +55,6 @@ class ComplaintRecord(Base):
             "immediate_action": self.immediate_action,
             "capa_recommendation": self.capa_recommendation,
             "created_at": self.created_at.isoformat() if self.created_at else None,
-            # Frontend camelCase contract aliases
             "formData": {
                 "complaintSource": self.complaint_source,
                 "customerName": self.customer_name,
@@ -77,6 +77,5 @@ class ComplaintRecord(Base):
                 "suggestedRootCause": self.suggested_root_cause,
                 "immediateAction": self.immediate_action,
                 "capaRecommendation": self.capa_recommendation,
-            }
+            },
         }
-

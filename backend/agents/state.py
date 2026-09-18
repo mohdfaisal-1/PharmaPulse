@@ -1,4 +1,5 @@
-from typing import TypedDict, List, Dict, Any, Optional
+from typing import Any, Dict, List, TypedDict
+
 
 class ComplaintState(TypedDict, total=False):
     raw_text: str
@@ -8,4 +9,3 @@ class ComplaintState(TypedDict, total=False):
     completeness_info: Dict[str, Any]
     duplicate_info: Dict[str, Any]
     messages: List[Dict[str, Any]]
-

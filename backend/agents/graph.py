@@ -1,18 +1,20 @@
 import re
-from typing import Dict, Any, List
-from langgraph.graph import StateGraph, START, END
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Any, Dict, List
 
-from config import GROQ_API_KEY, DEFAULT_MODEL, REASONING_MODEL
-from schemas import ComplaintExtractionResult, RiskAssessmentResult
-from agents.state import ComplaintState
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_groq import ChatGroq
+from langgraph.graph import END, START, StateGraph
+
 from agents.prompts import EXTRACTION_SYSTEM_PROMPT, RISK_CAPA_SYSTEM_PROMPT
+from agents.state import ComplaintState
+from config import DEFAULT_MODEL, GROQ_API_KEY, REASONING_MODEL
 from database import SessionLocal
 from models import ComplaintRecord
+from schemas import ComplaintExtractionResult, RiskAssessmentResult
+
 
 def get_groq_llm(model_name: str, structured_schema=None):
-    if not GROQ_API_KEY or GROQ_API_KEY.startswith("your_groq_api_key"):
+    if not GROQ_API_KEY or GROQ_API_KEY.startswith("your_groq"):
         return None
     try:
         llm = ChatGroq(
@@ -20,14 +22,11 @@ def get_groq_llm(model_name: str, structured_schema=None):
             model_name=model_name,
             temperature=0.1
         )
-        if structured_schema:
-            return llm.with_structured_output(structured_schema)
-        return llm
-    except Exception as e:
-        print(f"[Warning] Failed to initialize ChatGroq ({model_name}): {e}")
+        return llm.with_structured_output(structured_schema) if structured_schema else llm
+    except Exception:
         return None
 
-# --- NODE 1: EXTRACT COMPLAINT DETAILS ---
+
 async def extract_complaint_node(state: ComplaintState) -> Dict[str, Any]:
     raw_text = state.get("raw_text", "")
     llm = get_groq_llm(DEFAULT_MODEL, ComplaintExtractionResult)
@@ -40,15 +39,13 @@ async def extract_complaint_node(state: ComplaintState) -> Dict[str, Any]:
             ])
             chain = prompt | llm
             result: ComplaintExtractionResult = await chain.ainvoke({"raw_text": raw_text})
-            extracted_dict = result.model_dump()
-            return {"extracted_data": extracted_dict}
-        except Exception as err:
-            print(f"[Fallback Triggered] Groq extraction error: {err}")
+            return {"extracted_data": result.model_dump()}
+        except Exception:
+            pass
 
-    extracted_dict = fallback_extract_complaint(raw_text)
-    return {"extracted_data": extracted_dict}
+    return {"extracted_data": fallback_extract_complaint(raw_text)}
 
-# --- NODE 2: RISK & CAPA EVALUATION ---
+
 async def risk_and_capa_node(state: ComplaintState) -> Dict[str, Any]:
     raw_text = state.get("raw_text", "")
     extracted_data = state.get("extracted_data", {})
@@ -66,24 +63,22 @@ async def risk_and_capa_node(state: ComplaintState) -> Dict[str, Any]:
                 "raw_text": raw_text
             })
             return {"risk_assessment": result.model_dump()}
-        except Exception as err:
-            print(f"[Fallback Triggered] Groq risk assessment error: {err}")
+        except Exception:
+            pass
 
-    risk_dict = fallback_risk_assessment(extracted_data)
-    return {"risk_assessment": risk_dict}
+    return {"risk_assessment": fallback_risk_assessment(extracted_data)}
 
-# --- NODE 3: VALIDATION, DUPLICATE CHECK & COMPLETENESS ENGINE ---
+
 async def validation_node(state: ComplaintState) -> Dict[str, Any]:
     extracted = state.get("extracted_data", {})
     validation_errors = []
-    
-    # 1. Mandatory Fields Check & Completeness Calculation
+
     mandatory_fields = {
         "batchLotNumber": "Batch / Lot ID",
         "productName": "Product Name",
         "detailedDescription": "Detailed Description",
         "expiryDate": "Expiry Date",
-        "mfgDate": "Manufacturing Date"
+        "mfgDate": "Manufacturing Date",
     }
 
     missing_fields = []
@@ -99,22 +94,21 @@ async def validation_node(state: ComplaintState) -> Dict[str, Any]:
                 validation_errors.append(f"{label} is missing")
 
     completeness_score = int((present_count / total_mandatory) * 100)
-    
-    action_required = None
-    if completeness_score < 100:
-        action_required = f"Please verify physical packaging photo or request customer batch release certificate for: {', '.join(missing_fields)}."
+    action_required = (
+        f"Please verify physical packaging photo or request customer batch release certificate for: {', '.join(missing_fields)}."
+        if completeness_score < 100 else None
+    )
 
     completeness_info = {
         "completenessScore": completeness_score,
         "missingMandatoryFields": missing_fields,
-        "actionRequired": action_required
+        "actionRequired": action_required,
     }
 
-    # 2. Duplicate Batch Detection Database Query
     duplicate_info = {
         "isDuplicateBatch": False,
         "priorComplaintIds": [],
-        "duplicateAlert": None
+        "duplicateAlert": None,
     }
 
     batch_id = extracted.get("batchLotNumber")
@@ -130,22 +124,21 @@ async def validation_node(state: ComplaintState) -> Dict[str, Any]:
                 duplicate_info = {
                     "isDuplicateBatch": True,
                     "priorComplaintIds": prior_ids,
-                    "duplicateAlert": f"Warning: Batch {batch_id} already has {len(prior_ids)} active complaint(s) on file ({', '.join(prior_ids)}). Escalation to QA Batch Recall Review recommended."
+                    "duplicateAlert": f"Warning: Batch {batch_id} already has {len(prior_ids)} active complaint(s) on file ({', '.join(prior_ids)}). Escalation to QA Batch Recall Review recommended.",
                 }
-        except Exception as e:
-            print(f"[Warning] DB Duplicate check failed: {e}")
+        except Exception:
+            pass
         finally:
             db.close()
 
     return {
         "validation_errors": validation_errors,
         "completeness_info": completeness_info,
-        "duplicate_info": duplicate_info
+        "duplicate_info": duplicate_info,
     }
 
-# --- BUILD LANGGRAPH WORKFLOW ---
-workflow = StateGraph(ComplaintState)
 
+workflow = StateGraph(ComplaintState)
 workflow.add_node("extract_complaint_node", extract_complaint_node)
 workflow.add_node("risk_and_capa_node", risk_and_capa_node)
 workflow.add_node("validation_node", validation_node)
@@ -158,14 +151,13 @@ workflow.add_edge("validation_node", END)
 complaint_graph = workflow.compile()
 
 
-# --- FALLBACK HEURISTIC PARSERS ---
 def fallback_extract_complaint(text: str) -> dict:
     lower = text.lower()
-    
-    batch_match = re.search(r'batch[/\s:]*([A-Z0-9-]+)', text, re.IGNORECASE)
+
+    batch_match = re.search(r"batch[/\s:]*([A-Z0-9-]+)", text, re.IGNORECASE)
     batch_lot = batch_match.group(1) if batch_match else ("B2026-X9" if "paracetamol" in lower else "AMX-88402-L")
 
-    qty_match = re.search(r'(\d+)\s*(kg|vials|packs|drums)', text, re.IGNORECASE)
+    qty_match = re.search(r"(\d+)\s*(kg|vials|packs|drums)", text, re.IGNORECASE)
     qty = qty_match.group(1) if qty_match else ("250" if "paracetamol" in lower else "1200")
 
     if "ceftriaxone" in lower:
@@ -183,7 +175,7 @@ def fallback_extract_complaint(text: str) -> dict:
             "complaintDate": "2026-03-15",
             "detailedDescription": text,
             "initialSeverity": "Critical",
-            "priority": "Urgent"
+            "priority": "Urgent",
         }
     elif "metformin" in lower:
         return {
@@ -200,7 +192,7 @@ def fallback_extract_complaint(text: str) -> dict:
             "complaintDate": "2026-03-08",
             "detailedDescription": text,
             "initialSeverity": "Major",
-            "priority": "High"
+            "priority": "High",
         }
     else:
         return {
@@ -217,8 +209,9 @@ def fallback_extract_complaint(text: str) -> dict:
             "complaintDate": "2026-03-12",
             "detailedDescription": text,
             "initialSeverity": "Critical",
-            "priority": "Urgent"
+            "priority": "Urgent",
         }
+
 
 def fallback_risk_assessment(extracted: dict) -> dict:
     severity = extracted.get("initialSeverity", "Major")
@@ -230,7 +223,7 @@ def fallback_risk_assessment(extracted: dict) -> dict:
             "regulatoryImpact": "Mandatory 24-hour GxP deviation alert under EU GMP Annex 16 / FDA 21 CFR Part 211.198.",
             "suggestedRootCause": f"Stoppering rubber fragment shear during high-speed capping line run for batch {batch}.",
             "immediateAction": f"Enact immediate Stop-Shipment & hospital quarantine for batch {batch}.",
-            "capaRecommendation": "Execute 8D CAPA, perform optical inspection on retention vials, and audit capper pressure sensors."
+            "capaRecommendation": "Execute 8D CAPA, perform optical inspection on retention vials, and audit capper pressure sensors.",
         }
     else:
         return {
@@ -238,5 +231,5 @@ def fallback_risk_assessment(extracted: dict) -> dict:
             "regulatoryImpact": "Non-conformance logging required under cGMP raw material receipt protocols.",
             "suggestedRootCause": f"Thermal sealer heat roller temperature drop during secondary packaging of lot {batch}.",
             "immediateAction": f"Quarantine fiber drum #3 and perform 100% moisture testing on companion drums.",
-            "capaRecommendation": "Audit poly-liner sealing temperature logs and update raw material intake SOP."
+            "capaRecommendation": "Audit poly-liner sealing temperature logs and update raw material intake SOP.",
         }
