@@ -1,0 +1,13 @@
+# Backend sensitive environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python bytecode & cache
+__pycache__/
+*.pyc

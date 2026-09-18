@@ -1,0 +1,35 @@
+# Environment variables and credentials
+.env
+.env.local
+.env.*
+!.env.example
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Node dependencies and build
+node_modules/
+dist/
+build/
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# IDE & Editor files
+.vscode/*
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
