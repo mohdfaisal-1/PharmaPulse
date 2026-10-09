@@ -10,6 +10,9 @@
 
 PharmaPulse AI is an enterprise-grade Quality Management System (QMS) designed for pharmaceutical QA officers, pharmacovigilance teams, and regulatory compliance units. It leverages stateful **LangGraph** workflows and fast **Groq LLM** inference to automate customer complaint intake, extract structured GxP parameters, evaluate patient safety risks, suggest 8D CAPA plans, and perform automated batch audit queries against database records.
 
+
+https://github.com/user-attachments/assets/8947083c-0cb5-467c-b440-ff9748a743dc
+
 ---
 
 ## ✨ Key Features
